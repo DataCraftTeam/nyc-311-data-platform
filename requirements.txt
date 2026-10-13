@@ -1,0 +1,6 @@
+requests==2.34.2
+psycopg2-binary==2.9.13
+dbt-postgres==1.11.0
+dagster==1.13.26
+dagster-webserver==1.13.26
+dagster-postgres==0.29.26
