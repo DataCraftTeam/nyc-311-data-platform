@@ -1,0 +1,12 @@
+name: nyc_311
+version: "1.0.0"
+profile: nyc_311
+
+model-paths: ["models"]
+
+models:
+  nyc_311:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
