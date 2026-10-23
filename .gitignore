@@ -222,3 +222,4 @@ __marimo__/
 # dbt
 dbt_packages/
 logs/
+.user.yml
