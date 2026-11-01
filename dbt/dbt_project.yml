@@ -3,10 +3,14 @@ version: "1.0.0"
 profile: nyc_311
 
 model-paths: ["models"]
+macro-paths: ["macros"]
 
 models:
   nyc_311:
     staging:
       +materialized: view
+    intermediate:
+      +materialized: view
     marts:
       +materialized: table
+      +schema: gold

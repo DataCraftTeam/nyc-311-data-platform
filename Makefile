@@ -1,13 +1,22 @@
-.PHONY: dbt-debug up down
+.PHONY: docker-up docker-down dbt-debug dbt-parse dbt-run dbt-test
 
 -include .env
 export
 
-up:
+docker-up:
 	docker compose up -d
 
-down:
+docker-down:
 	docker compose down
 
 dbt-debug:
 	dbt debug --project-dir dbt --profiles-dir dbt
+
+dbt-parse:
+	dbt parse --project-dir dbt --profiles-dir dbt
+
+dbt-run:
+	dbt run --project-dir dbt --profiles-dir dbt
+
+dbt-test:
+	dbt test --project-dir dbt --profiles-dir dbt
