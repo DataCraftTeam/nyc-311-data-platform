@@ -1,0 +1,81 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: "Calendar dimension, used for both created and closed dates."
+    columns:
+      - name: date_key
+        description: "Date as YYYYMMDD integer."
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_agency
+    description: "Responding city agencies."
+    columns:
+      - name: agency_key
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_complaint_type
+    description: "Complaint type and descriptor."
+    columns:
+      - name: complaint_type_key
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_location
+    description: "Borough and ZIP code. Unknown borough is labelled UNSPECIFIED."
+    columns:
+      - name: location_key
+        tests:
+          - unique
+          - not_null
+
+  - name: fct_service_requests
+    description: "One row per service request, with keys to every dimension."
+    columns:
+      - name: unique_key
+        tests:
+          - unique
+          - not_null
+      - name: created_date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: closed_date_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: agency_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_agency')
+                field: agency_key
+      - name: complaint_type_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_complaint_type')
+                field: complaint_type_key
+      - name: location_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_location')
+                field: location_key
+
+  - name: mart_complaint_trends
+    description: "Monthly request counts per complaint type, with rank and month-over-month change (Q1, Q2)."
+  - name: mart_agency_resolution
+    description: "Average, median and p90 resolution hours and SLA breach % per agency per month (Q3)."
+  - name: mart_open_backlog
+    description: "Open requests by agency, complaint type and borough (Q4)."
