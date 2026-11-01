@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: stg_nyc311
+    description: "Standardized and type-cast staging model for NYC 311 service request records."
+    columns:
+      - name: unique_key
+        description: "Primary key identifying each service request."
+        tests:
+          - unique
+          - not_null
+
+      - name: created_at
+        description: "Timestamp when the service request was created."
+        tests:
+          - not_null
+
+      - name: closed_at
+        description: "Timestamp when the service request was closed."
+
+      - name: due_at
+        description: "Timestamp when service request resolution is due."
+
+      - name: agency
+        description: "Acronym of the responding city agency (e.g., NYPD, DOHMH, DOT)."
+        tests:
+          - not_null
+
+      - name: borough
+        description: "Standardized NYC borough name in uppercase, or NULL if unspecified."
+        tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - BRONX
+                  - BROOKLYN
+                  - MANHATTAN
+                  - QUEENS
+                  - STATEN ISLAND
+              config:
+                severity: warn
+
+      - name: channel_type
+        description: "Intake channel (e.g. PHONE, ONLINE, MOBILE, UNKNOWN)."
+        tests:
+          - not_null
+      - name: complaint_type
+        description: "Standardized complaint type, with common misspellings corrected."
+        tests:
+          - not_null
