@@ -11,8 +11,9 @@
 
 WITH bounds AS (
 
+    -- some requests are closed before they were created, so closed_at can fall before the first created_at
     SELECT
-        MIN(created_at)::DATE                                AS start_date,
+        LEAST(MIN(created_at), MIN(closed_at))::DATE         AS start_date,
         GREATEST(MAX(created_at), MAX(closed_at))::DATE      AS end_date
     FROM {{ ref('int_service_requests_enriched') }}
 
