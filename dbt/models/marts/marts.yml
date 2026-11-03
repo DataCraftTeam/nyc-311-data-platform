@@ -72,6 +72,10 @@ models:
               arguments:
                 to: ref('dim_location')
                 field: location_key
+      - name: has_invalid_close_date
+        description: "TRUE when closed_at is earlier than created_at (source data issue)."
+        tests:
+          - not_null
 
   - name: mart_complaint_trends
     description: "Monthly request counts per complaint type, with rank and month-over-month change (Q1, Q2)."

@@ -33,6 +33,8 @@ SELECT
     is_closed,
     resolution_time_hours,
     is_sla_breached,
+    -- source data issue: closed_at earlier than created_at (resolution_time_hours is NULL for these)
+    COALESCE(closed_at < created_at, FALSE)                                    AS has_invalid_close_date,
     latitude,
     longitude
 
