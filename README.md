@@ -90,9 +90,24 @@ make dbt-test
 
 ---
 
-### Step 7: Stop Services
+### Step 7: Build the Dashboard
 
-When finished, stop the database container:
+`make docker-up` also starts Metabase on http://localhost:3000.
+Set `METABASE_ADMIN_EMAIL` and `METABASE_ADMIN_PASSWORD` in `.env` (Metabase rejects common passwords), then run:
+
+```bash
+make dashboard
+```
+
+On the first run this creates the Metabase admin user, connects Metabase to the warehouse, and builds the
+**NYC 311 Service Requests** dashboard from the gold tables. Re-running it rebuilds the dashboard.
+Log in with the admin email and password from `.env`. See [docs/dashboard.md](docs/dashboard.md) for what each chart shows.
+
+---
+
+### Step 8: Stop Services
+
+When finished, stop the containers:
 
 ```bash
 make docker-down
