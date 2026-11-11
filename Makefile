@@ -10,7 +10,7 @@ docker-down:
 	docker compose down
 
 ingest:
-	python3 -m extract_load.main
+	python3 -m extract_load.main --max-records 5000
 
 dbt-debug:
 	dbt debug --project-dir dbt --profiles-dir dbt
