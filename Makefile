@@ -1,4 +1,4 @@
-.PHONY: docker-up docker-down dbt-debug dbt-parse dbt-run dbt-test dashboard
+.PHONY: docker-up docker-down dbt-debug dbt-parse dbt-run dbt-test ingest dashboard
 
 -include .env
 export
@@ -8,6 +8,9 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+ingest:
+	python3 -m extract_load.main --max-records 5000
 
 dbt-debug:
 	dbt debug --project-dir dbt --profiles-dir dbt
@@ -22,4 +25,4 @@ dbt-test:
 	dbt test --project-dir dbt --profiles-dir dbt
 
 dashboard:
-	python dashboard/setup_metabase.py
+	python3 dashboard/setup_metabase.py
