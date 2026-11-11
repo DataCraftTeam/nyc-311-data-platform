@@ -1,4 +1,4 @@
-.PHONY: docker-up docker-down dbt-debug dbt-parse dbt-run dbt-test ingest
+.PHONY: docker-up docker-down dbt-debug dbt-parse dbt-run dbt-test ingest dashboard
 
 -include .env
 export
@@ -23,3 +23,6 @@ dbt-run:
 
 dbt-test:
 	dbt test --project-dir dbt --profiles-dir dbt
+
+dashboard:
+	python3 dashboard/setup_metabase.py
