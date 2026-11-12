@@ -147,18 +147,6 @@ The analytical Gold layer uses an accumulating snapshot Star Schema centered on 
 
 ---
 
-## Key Engineering Decisions & Trade-offs
-
-| Decision | Why Chosen | What Was Avoided |
-|---|---|---|
-| **NYC 311 Dataset** | Real volume, daily API updates, messy real-world fields (missing dates, dirty boroughs) | Clean or synthetic toy CSVs with no real engineering challenges |
-| **Medallion Layers** | Raw copy is preserved in Bronze; transforms can be replayed if business rules change | Single-layer ETL directly into reporting tables with no raw audit trail |
-| **Docker for DB & BI** | One-command setup for PostgreSQL 18 and Metabase ensuring identical dev environments | Manual local installs drifting between team members' operating systems |
-| **Local dbt Execution** | Instant developer loop (`dbt run`, `dbt test`) and fast IDE linting inside Python virtualenv | Docker rebuild overhead for every single SQL model edit |
-| **Upsert on Ingestion** | Timestamp watermarking + `ON CONFLICT DO UPDATE` allows safe, idempotent pipeline re-runs | Truncate-and-reload downtime or duplicate rows from append-only pipelines |
-
----
-
 ## Tech Stack
 
 * **Language & Runtime:** Python 3.12+
@@ -305,27 +293,6 @@ make docker-down
 
 ---
 
-### Troubleshooting
-
-* **Port conflicts on `5432` or `3000`:**
-  * *Symptom:* `bind: address already in use` when running `make docker-up`.
-  * *Fix:* Another local PostgreSQL service or web app is using port 5432 or 3000. In `.env`, change `POSTGRES_PORT` (e.g. `POSTGRES_PORT=5433`) or `METABASE_PORT` (e.g. `METABASE_PORT=3001`), then restart with `make docker-down && make docker-up`.
-* **Metabase not ready when `make dashboard` runs:**
-  * *Symptom:* Script prints `Waiting for Metabase to start...` repeatedly or exits with `Metabase did not start`.
-  * *Fix:* Metabase runs on Java and typically requires 30–60 seconds to boot on first launch. If it exceeds 300 seconds, inspect the container logs:
-    ```bash
-    docker compose logs metabase
-    ```
-    Ensure your machine has sufficient memory allocated to Docker (minimum 2 GB recommended).
-* **Socrata API rate limiting (HTTP 429) or timeouts:**
-  * *Symptom:* `SocrataAPIError: HTTP 429 Too Many Requests` or connection timeout.
-  * *Fix:* Unauthenticated requests to Socrata allow up to 1,000 requests per rolling hour per IP. If throttled, wait for the limit window to reset, or supply an application token. If requests time out on slow networks, increase `SOCRATA_TIMEOUT` (default `30`s) in [`extract_load/config.py`](extract_load/config.py).
-* **dbt connection failures:**
-  * *Symptom:* `Connection test: [FAIL]` during `make dbt-debug`.
-  * *Fix:* Ensure the PostgreSQL container is running (`docker compose ps`). Check that `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, and `POSTGRES_PORT` in your `.env` file match the active container, and verify that you have activated the virtual environment (`source .venv/bin/activate`).
-
----
-
 ## Data Quality & Testing
 
 The project includes **25 automated data tests** validating schema contracts and referential integrity:
@@ -341,17 +308,12 @@ The project includes **25 automated data tests** validating schema contracts and
 ### Current Limitations
 * **No Automated Scheduling or Orchestration:** There is no workflow scheduler (Airflow, Dagster, or cron). All pipeline operations (`ingest`, `dbt-run`, `dbt-test`, `dashboard`) must be executed manually via `make` targets.
 * **No Incremental dbt Materializations:** Gold tables and the fact table are rebuilt via full table replacement (`materialized: table`) during `make dbt-run`, rather than using `is_incremental()` logic. This requires full table rewrites as data volume expands.
-* **SLA Threshold Source & Coverage:** The `is_sla_breached` calculation relies entirely on whether NYC agencies populated the upstream `due_date` field in Socrata. In the NYC 311 dataset, less than 1% of raw tickets contain a due date; tickets lacking this field evaluate to `NULL`. No agency-specific statutory SLA tiers are currently modeled.
-* **Handling of Anomalous Close Dates:** Upstream source data contains dirty records (265 rows) where `closed_at < created_at`. The pipeline flags these records (`has_invalid_close_date = TRUE`) and excludes them from resolution duration calculations (`resolution_time_hours = NULL`), but does not modify or impute the original timestamps.
-* **Single-Node PostgreSQL Architecture:** Ingestion and transformation run on a single containerized PostgreSQL instance with local volume storage (`pgdata`), without horizontal read replicas or table partitioning.
 
 ### Future Work
 * **Workflow Orchestration:** Integrate Dagster or Apache Airflow to orchestrate daily incremental ingestion, transformations, and automated alerting.
 * **Incremental dbt Models:** Convert `fct_service_requests` to an incremental dbt model filtered by `_ingested_at` or `created_at` to minimize warehouse compute on large batches.
 * **CI/CD Integration:** Set up GitHub Actions workflows to run `pytest`, `dbt parse`, SQL linting, and schema test checks on pull requests.
 * **Data Freshness Monitoring:** Add dbt `source freshness` tests on `bronze.raw_nyc_311` to alert if new records have not been ingested within 24 hours.
-* **Socrata App Token Authentication:** Add support for an authenticated Socrata app token to elevate API rate limits to 50,000 requests/hour.
-* **PostgreSQL Table Partitioning:** Partition `bronze.raw_nyc_311` and `gold.fct_service_requests` by month or year to optimize query pruning as historical data accumulates.
 
 ---
 
