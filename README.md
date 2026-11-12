@@ -1,12 +1,17 @@
 # NYC 311 Data Platform
 
-An end-to-end data platform that ingests live municipal service request data from the NYC 311 Open Data API, transforms it through a Medallion Architecture (Bronze → Silver → Gold) using PostgreSQL and dbt, and visualizes analytical insights in an automated Metabase dashboard.
+An end-to-end data platform that ingests live municipal service-request data from the NYC 311 Open Data API, transforms it through a Medallion Architecture (Bronze → Silver → Gold) using PostgreSQL and dbt, and renders analytical insights in an automated Metabase dashboard.
+There is **no scheduler or orchestrator** — every step is triggered manually via `make` targets.
+
+<!-- TODO: replace with actual screenshot once docs/images/dashboard.png is generated -->
+![NYC 311 Service Requests dashboard — KPI row, complaint-type bar chart, monthly trend line, agency resolution bar chart, and open-backlog table](docs/images/dashboard.png)
+*Metabase dashboard provisioned automatically by `make dashboard` from `gold.*` tables.*
 
 ---
 
 ## Architecture & Data Lineage
 
-The platform follows a three-tier **Medallion Architecture**, orchestrated via a unified `Makefile` task runner:
+The platform uses a three-tier **Medallion Architecture** with each step triggered manually through `make`:
 
 ```mermaid
 flowchart LR
@@ -16,46 +21,132 @@ flowchart LR
     end
 
     subgraph SILVER [Silver Layer · Cleaned & Tested]
-        PG_B -->|dbt run| STG[stg_nyc311\nTypes & Validation]
-        STG --> INT[int_service_requests_enriched\nDurations & SLA Flags]
+        PG_B -->|dbt run| STG[stg_nyc311\nView — Types & Validation]
+        STG --> INT[int_service_requests_enriched\nView — Durations & SLA Flags]
     end
 
     subgraph GOLD [Gold Layer · Star Schema & Marts]
-        INT --> FCT[(fct_service_requests\nFact Table)]
-        INT --> DIMS[(4 Dimensions\nAgency, Date, Loc, Type)]
-        FCT & DIMS --> MARTS[(3 Analytics Marts\nTrends, SLA, Backlog)]
+        INT --> FCT[(fct_service_requests\nTable — Fact)]
+        INT --> DIMS[(4 Dimension Tables\nAgency, Date, Location, Type)]
+        FCT & DIMS --> MARTS[(3 Analytics Mart Tables\nTrends · Resolution · Backlog)]
     end
 
     subgraph SERVING [Analytics & BI]
         MARTS --> MB[Metabase Dashboard\nREST API Automated Setup]
     end
 
-    CLI[Makefile CLI Tasks] -.->|make ingest| PY
+    CLI[Makefile task runner] -.->|make ingest| PY
     CLI -.->|make dbt-run / test| STG
     CLI -.->|make dashboard| MB
 ```
 
-1. **Bronze (`bronze.raw_nyc_311`):** Raw API data landed directly in PostgreSQL with batch audit metadata (`_ingested_at`, `_source_batch_id`) and high-watermark incremental upserts (`ON CONFLICT DO UPDATE`).
-2. **Silver (`silver.*`):** Materialized views that clean timestamps, standardize complaint strings, validate borough names, and compute ticket resolution durations.
-3. **Gold (`gold.*`):** Physical tables modeled as a dimensional **Star Schema** plus aggregate analytical marts answering specific business questions.
-4. **Serving (Metabase):** Containerized BI dashboard automatically provisioned via Metabase's REST API, rendering KPIs, monthly trends, and agency performance charts.
+**Layer materialization (from [`dbt_project.yml`](dbt/dbt_project.yml)):**
+
+| Layer | dbt folder | Materialization | PostgreSQL schema |
+|---|---|---|---|
+| Bronze | *(ingested by Python)* | Table | `bronze` |
+| Silver – staging | `models/staging/` | **View** | `silver` |
+| Silver – intermediate | `models/intermediate/` | **View** | `silver` |
+| Gold – dimensions / fact / marts | `models/marts/` | **Table** | `gold` |
 
 ---
 
 ## Business Questions Answered
 
-| # | Business Question | Answering Mart / Model | Key Metric |
+| # | Business Question | Answering Model | Key Metric |
 |---|---|---|---|
 | **Q1** | Which complaint types are most common across NYC? | `gold.mart_complaint_trends` | Total request count & monthly rank |
-| **Q2** | Which complaint categories are accelerating over time? | `gold.mart_complaint_trends` | Month-over-Month (% MoM) growth rate |
-| **Q3** | How quickly do city agencies resolve tickets, and what is their SLA breach rate? | `gold.mart_agency_resolution` | Median and P90 resolution hours, SLA breach % |
-| **Q4** | How many requests remain unresolved, and what is their average age? | `gold.mart_open_backlog` | Open request count, average days open by borough |
+| **Q2** | Which complaint categories are growing over time? | `gold.mart_complaint_trends` | Month-over-Month change % (`mom_change_pct`) |
+| **Q3** | How quickly do city agencies resolve tickets? | `gold.mart_agency_resolution` | Median and P90 resolution hours; SLA breach % |
+| **Q4** | How many requests remain unresolved, and how old are they? | `gold.mart_open_backlog` | Open count, average days open, by borough |
 
 ---
 
-## Data Modeling (Star Schema)
+## Results
 
-The analytical Gold layer uses an accumulating snapshot Star Schema centered on service requests:
+> All figures below were measured on a **local machine** running PostgreSQL 18 in Docker and dbt in a Python 3.12 virtualenv.
+
+### Pipeline run metrics
+
+| Step | Command | Wall time |
+|---|---|---|
+| Incremental ingest (0 new records — already up to date) | `make ingest` | ~1.7 s |
+| Full dbt model run (10 models) | `make dbt-run` | ~4.8 s |
+| All 25 data tests | `make dbt-test` | ~3.1 s |
+
+### Bronze table
+
+| Metric | Value |
+|---|---|
+| Total rows in `bronze.raw_nyc_311` | **315,111** |
+| Earliest `created_date` | 2026-10-12 |
+| Latest `created_date` | 2026-11-10 |
+| Date range covered | ~29 days |
+
+> On the **first run** (empty table) `make ingest` fetches all records created within the last `INGEST_LOOKBACK_DAYS` (default **30 days**) in pages of `INGEST_BATCH_SIZE` (default **5,000**). Subsequent runs fetch only records newer than the stored high-watermark.
+
+### dbt model output
+
+| Model | Type | Rows |
+|---|---|---|
+| `silver.stg_nyc311` | View | — |
+| `silver.int_service_requests_enriched` | View | — |
+| `gold.dim_agency` | Table | 14 |
+| `gold.dim_date` | Table | 78 |
+| `gold.dim_location` | Table | 258 |
+| `gold.dim_complaint_type` | Table | 861 |
+| `gold.fct_service_requests` | Table | 315,111 |
+| `gold.mart_agency_resolution` | Table | 26 |
+| `gold.mart_complaint_trends` | Table | 328 |
+| `gold.mart_open_backlog` | Table | 562 |
+
+### dbt test results
+
+```
+Done. PASS=24  WARN=1  ERROR=0  SKIP=0  TOTAL=25
+```
+
+The single warning is `assert_closed_not_before_created`: **265 source records** have `closed_date < created_date` — a known upstream data-quality issue in the NYC Open Data feed. These records are flagged with `has_invalid_close_date = TRUE` in `fct_service_requests` and are excluded from all resolution-time calculations; they are displayed as a separate KPI in the dashboard.
+
+### Sample mart queries
+
+**`gold.mart_complaint_trends` — Top 5 complaint types, October 2026**
+
+| complaint_type | month | requests | rank |
+|---|---|---|---|
+| Illegal Parking | 2026-10 | 37,859 | #1 |
+| HEAT/HOT WATER | 2026-10 | 21,636 | #2 |
+| Noise - Residential | 2026-10 | 21,626 | #3 |
+| Blocked Driveway | 2026-10 | 11,014 | #4 |
+| Noise - Street/Sidewalk | 2026-10 | 9,773 | #5 |
+
+> `mom_change_pct` is `NULL` for October 2026 because there are no September 2026 records in the current dataset — the ingestion window starts 2026-10-12.
+
+**`gold.mart_agency_resolution` — Top 5 agencies by closed tickets, October 2026**
+
+| agency | closed | avg hrs | median hrs | p90 hrs | sla_breach_pct |
+|---|---|---|---|---|---|
+| NYPD | 96,174 | 2.57 | 1.30 | 6.28 | NULL* |
+| HPD | 32,667 | 86.98 | 60.98 | 203.06 | NULL* |
+| DSNY | 14,622 | 47.31 | 33.16 | 102.72 | 0.0 % |
+| DEP | 9,067 | 49.21 | 21.80 | 144.35 | NULL* |
+| DOT | 8,989 | 75.79 | 29.86 | 239.07 | NULL* |
+
+*`sla_breach_pct` is `NULL` for most agencies because `due_date` is populated on fewer than 1 % of records in the source dataset — only DSNY tickets carried a due date in this window.*
+
+**`gold.mart_open_backlog` — 5 largest open backlogs**
+
+| agency | complaint_type | borough | open | avg age |
+|---|---|---|---|---|
+| HPD | HEAT/HOT WATER | BRONX | 1,963 | 14.3 days |
+| HPD | UNSANITARY CONDITION | BROOKLYN | 1,959 | 13.1 days |
+| HPD | UNSANITARY CONDITION | MANHATTAN | 1,586 | 12.8 days |
+| HPD | UNSANITARY CONDITION | BRONX | 1,358 | 9.9 days |
+| HPD | HEAT/HOT WATER | BROOKLYN | 1,116 | 12.2 days |
+
+---
+
+## Data Modeling — Star Schema
 
 ```text
                   dim_date (created & closed)
@@ -65,16 +156,19 @@ The analytical Gold layer uses an accumulating snapshot Star Schema centered on 
                        dim_location
 ```
 
-* **Fact Table (`fct_service_requests`):**
-  * **Grain:** One row per service request (`unique_key`).
-  * **Keys:** MD5 surrogate keys linking to each dimension (`agency_key`, `date_key`, `location_key`, `complaint_type_key`).
-  * **Measures & Flags:** `resolution_time_hours`, `is_closed`, `is_sla_breached`, `has_invalid_close_date`.
-  * **Degenerate Dimensions:** `status`, `channel_type`, `resolution_description`.
-* **Dimension Tables:**
-  * [`dim_agency`](dbt/models/marts/dim_agency.sql): City agencies responding to requests (NYPD, HPD, DSNY, DOT, etc.).
-  * [`dim_date`](dbt/models/marts/dim_date.sql): Calendar dimension (year, quarter, month, day of week, weekend flag) covering all request creation and closure dates.
-  * [`dim_location`](dbt/models/marts/dim_location.sql): Borough and ZIP code combinations (nulls safely assigned to `UNSPECIFIED`).
-  * [`dim_complaint_type`](dbt/models/marts/dim_complaint_type.sql): Granular complaint classification and descriptors.
+**Fact table** `fct_service_requests` — grain: one row per service request (`unique_key`):
+* **Surrogate keys:** MD5 of natural key(s) — stable across full rebuilds.
+* **Measures:** `resolution_time_hours`, `is_sla_breached`, `is_closed`, `has_invalid_close_date`.
+* **Degenerate dimensions** kept on the fact: `status`, `channel_type`, `resolution_description` (low cardinality; not worth separate dimension tables).
+
+**Dimension tables:**
+
+| Table | Key | Rows | Contents |
+|---|---|---|---|
+| `dim_agency` | `agency_key` | 14 | Agency acronym + full name |
+| `dim_date` | `date_key` (YYYYMMDD) | 78 | Year, quarter, month, day-of-week, weekend flag |
+| `dim_location` | `location_key` | 258 | Borough + ZIP code; NULLs mapped to `UNSPECIFIED` |
+| `dim_complaint_type` | `complaint_type_key` | 861 | Complaint type + descriptor |
 
 ---
 
@@ -82,134 +176,203 @@ The analytical Gold layer uses an accumulating snapshot Star Schema centered on 
 
 | Decision | Why Chosen | What Was Avoided |
 |---|---|---|
-| **NYC 311 Dataset** | Real volume, daily API updates, messy real-world fields (missing dates, dirty boroughs) | Clean or synthetic toy CSVs with no real engineering challenges |
-| **Medallion Layers** | Raw copy is preserved in Bronze; transforms can be replayed if business rules change | Single-layer ETL directly into reporting tables with no raw audit trail |
-| **Docker for DB & BI** | One-command setup for PostgreSQL 18 and Metabase ensuring identical dev environments | Manual local installs drifting between team members' operating systems |
-| **Local dbt Execution** | Instant developer loop (`dbt run`, `dbt test`) and fast IDE linting inside Python virtualenv | Docker rebuild overhead for every single SQL model edit |
-| **Upsert on Ingestion** | Timestamp watermarking + `ON CONFLICT DO UPDATE` allows safe, idempotent pipeline re-runs | Truncate-and-reload downtime or duplicate rows from append-only pipelines |
+| **NYC 311 Dataset** | Real volume, daily API updates, dirty real-world fields (missing dates, inconsistent boroughs) | Clean or synthetic toy CSVs with no real data-quality challenges |
+| **Medallion Layers** | Bronze is preserved raw; transforms replay from source without re-hitting the API | Single-layer ETL directly into reporting tables — no audit trail, no replay |
+| **Docker for DB & BI** | One-command identical dev environment for PostgreSQL 18 + Metabase | Manual local installs that drift between developer machines |
+| **Local dbt (virtualenv)** | Instant feedback loop — `dbt run`, `dbt test`, IDE linting — no container rebuild overhead | Containerising dbt adds volume-mount complexity with no benefit at this scale |
+| **Watermark upsert** | Incremental fetch since last `max(created_date)` + `ON CONFLICT DO UPDATE` = safe re-runs | Full truncate-and-reload causes downtime; append-only creates duplicates |
+| **Silver as views** | View DDL updates propagate instantly; no storage duplicated for intermediate steps | Materialising staging/intermediate as tables wastes I/O for data that is rebuilt on every run anyway |
 
 ---
 
 ## Tech Stack
 
-* **Language & Runtime:** Python 3.12+
-* **Data Warehouse:** PostgreSQL 18
-* **Data Transformation & Testing:** dbt-core 1.11 (`dbt-postgres`)
-* **Business Intelligence:** Metabase v0.63.22
-* **Infrastructure:** Docker & Docker Compose
-* **Developer CLI:** GNU Make
+| Tool | Version | Role |
+|---|---|---|
+| Python | 3.12 | Ingestion pipeline (`extract_load/`) |
+| PostgreSQL | 18 (Docker) | Storage for all three layers |
+| dbt-postgres | 1.11.0 | Transformation, testing, schema management |
+| Metabase | v0.63.22 (Docker) | BI dashboard (auto-provisioned) |
+| Docker Compose | — | Service orchestration (Postgres + Metabase) |
+| GNU Make | — | Developer task runner |
 
 ---
 
-## Quickstart & How to Run
+## Configuration
+
+Every variable read from `.env.example` / `extract_load/config.py`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `POSTGRES_HOST` | `localhost` | PostgreSQL host (use `postgres` inside Docker) |
+| `POSTGRES_PORT` | `5432` | PostgreSQL port |
+| `POSTGRES_USER` | `your_user` | Database user |
+| `POSTGRES_PASSWORD` | `your_password` | Database password |
+| `POSTGRES_DB` | `nyc311` | Database name |
+| `SOCRATA_ENDPOINT` | `https://data.cityofnewyork.us/resource/erm2-nwe9.json` | NYC 311 Socrata SODA API URL |
+| `INGEST_BATCH_SIZE` | `5000` | Records per API page (also set via `--batch-size`) |
+| `INGEST_LOOKBACK_DAYS` | `30` | Days to look back on the **first** run when Bronze is empty |
+| `INGEST_MAX_RECORDS` | *(unset = unlimited)* | Hard cap on total records per run (also set via `--max-records`) |
+| `METABASE_PORT` | `3000` | Host port Metabase binds to |
+| `METABASE_ADMIN_EMAIL` | `admin@example.com` | Metabase admin account email |
+| `METABASE_ADMIN_PASSWORD` | `change_me_123` | Metabase admin account password *(change before sharing)* |
+
+> `SOCRATA_TIMEOUT`, `SOCRATA_MAX_RETRIES`, and `SOCRATA_BACKOFF_FACTOR` can also be set; see [`extract_load/config.py`](extract_load/config.py) for defaults (30 s, 4 retries, factor 1.0).
+
+---
+
+## Quickstart
 
 ### Prerequisites
 * Docker & Docker Compose
 * Python 3.12+
 * `make`
 
+> **Windows users:** use Git Bash or WSL so `make` commands run identically.
+
 ---
 
-### Step 1: Set Up Python Environment
+### Step 1 — Python environment
 
 ```bash
-# Create and activate virtual environment
 python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies (dbt, psycopg2, requests)
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 ---
 
-### Step 2: Configure Environment Variables
-
-Copy the example environment configuration:
+### Step 2 — Environment variables
 
 ```bash
 cp .env.example .env
-```
-
-*(The defaults work out of the box for local Docker development).*
-
----
-
-### Step 3: Start Services
-
-Launch PostgreSQL and Metabase in the background:
-
-```bash
-make docker-up
-```
-
-Verify that the database is healthy and reachable:
-
-```bash
-make dbt-debug
+# Edit .env to set POSTGRES_USER, POSTGRES_PASSWORD, and METABASE_ADMIN_PASSWORD
 ```
 
 ---
 
-### Step 4: Ingest Raw Data (Bronze)
+### Step 3 — Start services
 
-Fetch NYC 311 records from the Socrata API and upsert them into `bronze.raw_nyc_311`:
+```bash
+make docker-up      # starts postgres:18 and metabase:v0.63.22
+make dbt-debug      # verify dbt can connect to PostgreSQL
+```
+
+---
+
+### Step 4 — Ingest raw data (Bronze)
 
 ```bash
 make ingest
 ```
 
----
+**Default behaviour on first run:** fetches all NYC 311 records created within the last **30 days** (`INGEST_LOOKBACK_DAYS`) in pages of **5,000** (`INGEST_BATCH_SIZE`), upserted directly into `bronze.raw_nyc_311`.
 
-### Step 5: Run Transformations & Tests (Silver & Gold)
+**Subsequent runs** fetch only records newer than the stored high-watermark (`max(created_date)` already in Bronze), so they complete in seconds if the data is current.
 
-Execute dbt models to build all views, dimensions, facts, and marts:
-
-```bash
-make dbt-run
-```
-
-Run automated data quality tests (uniqueness, referential integrity, accepted values):
+**To change how much data is ingested:**
 
 ```bash
-make dbt-test
+# Change page size
+INGEST_BATCH_SIZE=1000 make ingest
+
+# Hard cap at N records for this run only
+python3 -m extract_load.main --max-records 10000
+
+# Start from a specific date instead of the watermark
+python3 -m extract_load.main --start-date 2026-10-01T00:00:00.000
+
+# Full re-ingest ignoring the watermark (uses INGEST_LOOKBACK_DAYS)
+python3 -m extract_load.main --full-refresh
+```
+
+Relevant variables in [`extract_load/config.py`](extract_load/config.py): `INGEST_BATCH_SIZE`, `INGEST_LOOKBACK_DAYS`, `INGEST_MAX_RECORDS`.
+
+---
+
+### Step 5 — Transform & test (Silver + Gold)
+
+```bash
+make dbt-run     # builds all 10 models (~5 s)
+make dbt-test    # runs all 25 tests (~3 s)
 ```
 
 ---
 
-### Step 6: Provision & View the Dashboard
-
-Build the pre-configured **NYC 311 Service Requests** dashboard in Metabase:
+### Step 6 — Provision the dashboard
 
 ```bash
 make dashboard
 ```
 
-Once the script finishes, open **[http://localhost:3000](http://localhost:3000)** in your browser:
-* **Email:** `admin@example.com`
-* **Password:** `change_me_123`
+Open **[http://localhost:3000](http://localhost:3000)**, log in with the credentials from your `.env`, and navigate to the **NYC 311 Service Requests** dashboard.
 
 ---
 
-### Step 7: Teardown
-
-When finished, stop all containerized services:
+### Step 7 — Teardown
 
 ```bash
-make docker-down
+make docker-down          # stop containers, keep volumes (data persists)
+docker compose down -v    # stop containers AND delete all volumes
 ```
 
-*(To completely remove database and Metabase volumes, run `docker compose down -v`).*
+---
+
+## Troubleshooting
+
+**Port 5432 already in use**
+A local PostgreSQL instance is likely running. Either stop it (`sudo systemctl stop postgresql`) or change the mapped port in `.env` (`POSTGRES_PORT=5433`) and in `docker-compose.yml`.
+
+**Port 3000 already in use**
+Change `METABASE_PORT` in `.env` (e.g. `METABASE_PORT=3001`). The `docker-compose.yml` reads `${METABASE_PORT:-3000}`.
+
+**`make dashboard` fails with "Metabase did not start"**
+Metabase (JVM) can take 60–90 s on first boot. The setup script polls `/api/health` for up to 300 s. If it still times out, check container logs: `docker compose logs metabase`.
+
+**Socrata API rate-limiting or timeout**
+Unauthenticated access is capped at ~1,000 requests/hour. The client retries 429/5xx responses up to 4 times with exponential backoff (`SOCRATA_MAX_RETRIES`, `SOCRATA_BACKOFF_FACTOR`). To raise the limit, obtain a free Socrata App Token and pass it as a header by modifying [`extract_load/client.py`](extract_load/client.py).
+
+**dbt connection failures (`make dbt-debug` fails)**
+Verify PostgreSQL is running (`docker compose ps`), that `.env` values match, and that the port is reachable: `psql -h localhost -U your_user -d nyc311`.
 
 ---
 
 ## Data Quality & Testing
 
-The project includes **25 automated data tests** validating schema contracts and referential integrity:
-* **Primary Key Constraints:** `unique` and `not_null` verified on all dimension surrogate keys and fact `unique_key`.
-* **Referential Integrity:** 5 foreign key `relationships` tests verifying that 100% of rows in `fct_service_requests` join cleanly to their respective dimensions.
-* **Accepted Values:** Borough names strictly checked against the 5 valid NYC boroughs (`BRONX`, `BROOKLYN`, `MANHATTAN`, `QUEENS`, `STATEN ISLAND`).
-* **Source Anomaly Detection:** A custom dbt test ([`assert_closed_not_before_created.sql`](dbt/tests/assert_closed_not_before_created.sql)) monitors upstream dirty records where tickets were marked closed before they were created, automatically flagging them with `has_invalid_close_date = TRUE` and warning without crashing the pipeline.
+25 automated tests run via `make dbt-test` (last measured result: **24 PASS, 1 WARN, 0 ERROR**):
+
+| Test type | Count | Models covered |
+|---|---|---|
+| `unique` | 6 | All 4 dim keys + `fct.unique_key` + `stg.unique_key` |
+| `not_null` | 13 | Dim keys, fact keys, mandatory staging columns |
+| `relationships` (FK) | 5 | All foreign keys in `fct_service_requests` |
+| `accepted_values` | 1 | `stg_nyc311.borough` — 5 valid NYC borough names |
+| Custom singular test | 1 (WARN) | `assert_closed_not_before_created` — 265 upstream-dirty records |
+
+---
+
+## Limitations & Known Issues
+
+| Limitation | Detail |
+|---|---|
+| **No scheduler or orchestration** | Pipeline steps are run manually via `make`. There is no Airflow, Dagster, or cron job. |
+| **No incremental dbt models** | All Gold models are `materialized: table` — a full rebuild runs every `dbt run`. With 315 K rows this takes ~2 s, but will slow as the dataset grows. |
+| **SLA breach metric mostly NULL** | `due_date` is populated on fewer than 1 % of source records; `is_sla_breached` and `sla_breach_pct` are NULL for most agencies and tickets. |
+| **Invalid close dates not corrected** | 265 records have `closed_date < created_date`. These are flagged (`has_invalid_close_date = TRUE`) and excluded from resolution calculations but remain in the fact table. |
+| **Single-node PostgreSQL** | No replication, partitioning, or connection pooling. Adequate for development; not production-ready. |
+| **Dashboard charts use native SQL** | Metabase questions are raw SQL against `gold.*` — not dbt Semantic Layer or Metabase models. Changes to Gold column names require updating `dashboard/setup_metabase.py`. |
+| **`mom_change_pct` NULL on first month** | The LAG window in `mart_complaint_trends` returns NULL for October 2026 because no September data exists in the ingestion window. |
+
+---
+
+## Future Work
+
+* **Orchestration** — wrap `make ingest` + `make dbt-run` in a Dagster asset graph or Airflow DAG with scheduling, retries, and alerting.
+* **Incremental dbt models** — convert Gold fact and mart models to `incremental` materialization to avoid full table rewrites on every run.
+* **CI pipeline** — add a GitHub Actions workflow that runs `dbt parse`, `dbt test`, and `pytest` on every pull request.
+* **Data-freshness tests** — add dbt `freshness` checks on the `bronze.raw_nyc_311` source to alert when ingestion has not run for more than 24 hours.
+* **Socrata App Token** — authenticate ingestion requests to raise the API rate limit above 1,000/hour.
+* **Partitioned Bronze table** — partition `bronze.raw_nyc_311` by month as row count grows to maintain query performance.
 
 ---
 
@@ -217,31 +380,35 @@ The project includes **25 automated data tests** validating schema contracts and
 
 ```text
 ├── dashboard/
-│   └── setup_metabase.py          # Automated REST API provisioning for Metabase
+│   └── setup_metabase.py          # Automated Metabase REST API provisioning
 ├── dbt/
-│   ├── dbt_project.yml            # dbt configuration & schema mapping
+│   ├── dbt_project.yml            # Materialization config: views (silver), tables (gold)
 │   ├── profiles.yml               # PostgreSQL connection profile
 │   ├── macros/
-│   │   └── generate_schema_name.sql # Custom schema resolver (bronze/silver/gold)
+│   │   └── generate_schema_name.sql # Overrides dbt default to write directly to bronze/silver/gold
 │   ├── models/
-│   │   ├── staging/               # Silver: type casting & cleansing views
-│   │   ├── intermediate/          # Silver: duration calculations & SLA flags
-│   │   └── marts/                 # Gold: Star Schema fact, dims, and 3 marts
-│   └── tests/                     # Custom data quality tests
+│   │   ├── staging/               # Silver views: type casting, borough validation
+│   │   ├── intermediate/          # Silver views: resolution hours, SLA flags
+│   │   └── marts/                 # Gold tables: star schema + 3 analytics marts
+│   └── tests/
+│       └── assert_closed_not_before_created.sql  # Custom singular test (severity: warn)
 ├── docs/
-│   └── architecture.drawio        # draw.io diagram source file
+│   ├── architecture.drawio        # draw.io diagram source
+│   └── images/
+│       └── dashboard.png          # Metabase dashboard screenshot
 ├── extract_load/
-│   ├── client.py                  # Socrata API client with pagination
+│   ├── client.py                  # Socrata SODA API client (pagination, retries)
+│   ├── config.py                  # All pipeline settings read from env vars
 │   ├── db.py                      # PostgreSQL batch upsert loader
-│   ├── config.py                  # Ingestion settings & environment parsing
-│   └── main.py                    # Ingestion CLI entrypoint
+│   └── main.py                    # CLI entrypoint (argparse)
 ├── infra/
 │   └── postgres/
-│       ├── 01_schemas.sql         # Auto-provision bronze, silver, gold schemas
-│       └── 02_bronze_tables.sql   # Raw landing table DDL
-├── tests/                         # Pytest unit tests for ingestion
-├── docker-compose.yml             # PostgreSQL 18 & Metabase services
-├── Makefile                       # Unified developer CLI task runner
+│       ├── 01_schemas.sql         # Creates bronze, silver, gold schemas on init
+│       └── 02_bronze_tables.sql   # DDL for raw_nyc_311 with upsert primary key
+├── tests/
+│   └── test_extract_load.py       # Pytest unit tests for the ingestion pipeline
+├── docker-compose.yml             # PostgreSQL 18 + Metabase v0.63.22 services
+├── Makefile                       # Task runner: docker-up/down, ingest, dbt-*, dashboard
 ├── requirements.txt               # Pinned Python dependencies
 └── README.md
 ```
